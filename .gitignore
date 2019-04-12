@@ -100,3 +100,6 @@ local*
 *.avi
 *.png
 *.h5
+*.json
+*.txt
+*.csv
