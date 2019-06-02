@@ -20,48 +20,56 @@ class Tracker(object):
         self.cur_id=1
         self.frameCount =1
         
-    def get_distance_matrix(self,dets):
+    def get_distance_matrix(self,dets,frame):
         dists = np.zeros((len(dets),len(self.tracks)),np.float32)
         for itrack in range(len(self.tracks)):
             for ipred in range(len(dets)):
                 #iou_dist = (1- iou(dets[ipred].corners(),self.tracks[itrack].corners()))
                 
-                #desc_dist = get_distance(self.tracks[itrack].descriptor,dets[ipred].descriptor)
+                desc_dist = np.linalg.norm(dets[ipred].hog-self.tracks[itrack].hog,ord=1)
+                
                 iou_overlap = iou(dets[ipred].corners(),self.tracks[itrack].corners())
+              
+                uncertainety =np.maximum(1-dets[ipred].conf,0.5)
                 #if(iou_dist==1):
                     #iou_dist=3
                # if(iou_dist<0.7):
                     #iou_dist = 0
-                dists[ipred,itrack] = -iou_overlap
+                dists[ipred,itrack] = uncertainety*((1-iou_overlap)+desc_dist)
         return dists
     def track(self,dets,frame_gray,prev_frame_gray):
         
-        dists = self.get_distance_matrix(dets)
+        dists = self.get_distance_matrix(dets,frame_gray)
         matched_indices = linear_assignment(dists)
+        
         for m in matched_indices:
             #descr_t = self.tracks[m[1]].descriptor
             #descr_p = dets[m[0]].descriptor
 
-            if(self.tracks[m[1]].missed_count<3):
-                iou_threshold=0.5
-            elif(self.tracks[m[1]].missed_count<8):
-                iou_threshold=0.2
-            else:
-                iou_threshold=0.1
-            if(dists[m[0],m[1]]>iou_threshold):#iou_threshold):
+#            if(self.tracks[m[1]].missed_count<3):
+#                iou_threshold=1.5
+#            elif(self.tracks[m[1]].missed_count<8):
+#                iou_threshold=1.8
+#            else:
+#                iou_threshold=1.9
+                
+            
+            iou_dist = iou(dets[m[0]].corners(),self.tracks[m[1]].corners())
+            if((dists[m[0],m[1]]>0.7 and iou_dist<0.2 )or (iou_dist <=0)):#iou_threshold):
                 m[0] = -1
                 m[1]=-1
+            
         for trk in self.tracks:
             trk.matched=False
-            
+        
         for d,det in enumerate(dets):
             if(d not in matched_indices[:,0] ):
+                if(det.conf>=0.5):
                 
+                    self.tracks.append(Track(self.tracking_method,self.cur_id,det,frame_gray))
+                    
+                    self.cur_id+=1
                 
-               
-                self.tracks.append(Track(self.tracking_method,self.cur_id,det))
-                
-                self.cur_id+=1
                 
             else:
                 index = np.where(matched_indices[:,0]==d)
@@ -70,30 +78,37 @@ class Tracker(object):
         
         for t,trk in enumerate(self.tracks):
             if(t not in matched_indices[:,1] and trk.matched==False):
+                
                 trk.missed_count+=1
-                if(trk.tracked_count<10):
-                    if(trk.missed_count>4):
-                        trk.conf = 0.3 #hide
-                    elif(trk.missed_count>6):
-                        trk.conf = 0.2 #remove
-                elif(trk.tracked_count<30):
-                    if(trk.missed_count>8):
-                        trk.conf=0.3 #hide
-                    elif(trk.missed_count>12):
-                        trk.conf = 0.2 #remove
-                else:
-                    if(trk.missed_count>15):
-                        trk.conf=0.3 #hide
-                    elif(trk.missed_count>20):
-                        trk.conf = 0.2 #remove
-                if(trk.missed_count>30):
-                    trk.conf=0 #remove
+#                if(trk.tracked_count<10):
+#                    if(trk.missed_count>6):
+#                        trk.conf = 0.2 #hide
+#                    elif(trk.missed_count>4):
+#                        trk.conf = 0.3 #remove
+#                elif(trk.tracked_count<30):
+#                    if(trk.missed_count>12):
+#                        trk.conf=0.2 #hide
+#                    elif(trk.missed_count>8):
+#                        trk.conf = 0.3 #remove
+#                else:
+#                    if(trk.missed_count>25):
+#                        trk.conf=0.2 #hide
+#                    elif(trk.missed_count>20):
+#                        trk.conf = 0.3 #remove
+#                if(trk.missed_count>30):
+#                    trk.conf=0 #remove
                 
                 trk.apply_prediction(frame_gray,prev_frame_gray)
        
         self.frameCount+=1
     def get_display_tracks(self):
-        return [track for track in self.tracks if track.conf>0.2]
+        
+        another = []
+        
+        
+        self.tracks = [track for track in self.tracks if track.conf>=0]
+        return [track for track in self.tracks if track.conf>0.05]
+        
     def get_collision_points(self):
         cols = []
         objs = self.get_display_tracks()

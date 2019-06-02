@@ -1,4 +1,5 @@
 import numpy as np
+import utils
 class Detection(object):
     def __init__(self,conf,bbox,desc=[]):
         self.xmin = float(bbox[0])
@@ -6,6 +7,7 @@ class Detection(object):
         self.xmax = float(bbox[2])
         self.ymax = float(bbox[3])
         self.conf = float(conf)
+       
         self.descriptor = np.array(list(map(float,desc)))
     def topleft(self):
         return np.array([self.xmin,self.ymin],np.float32)
@@ -22,3 +24,11 @@ class Detection(object):
         return z
     def center(self):
         return np.array([(self.xmin+self.xmax)/2,(self.ymin+self.ymax)/2],np.float32)
+    def calc_hog_descriptor(self,frame):
+       
+        self.hog = utils.get_hog_descriptor(frame,self.xmin,self.ymin,self.xmax,self.ymax)
+        
+    def copy(self):
+        other = Detection(self.conf,[self.xmin,self.ymin,self.xmax,self.ymax])
+        return other
+    

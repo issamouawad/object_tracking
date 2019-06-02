@@ -2,11 +2,12 @@ import numpy as np
 import cv2 as cv
 from detection import Detection
 from utils import bounding_box_naive
+from utils import get_hog_descriptor
 import math
 class Track(Detection):
-    def __init__(self,method,_id,det):
-         
-        self.conf = 0.3
+    def __init__(self,method,_id,det,frame_gray):
+        
+        self.conf = 0
         self.xmin = det.xmin
         self.ymin = det.ymin
         self.xmax = det.xmax
@@ -16,6 +17,7 @@ class Track(Detection):
         self.pred_xmax = det.xmax
         self.pred_ymax = det.ymax
         self.tracked_count = 1
+        self.hog = det.hog
         self.offset = np.array([0,0],np.float32)
         self.missed_count=0
         self.matched=True
@@ -23,7 +25,7 @@ class Track(Detection):
         self.descriptor[:] = det.descriptor[:]
         self.track_id = _id
         self.method = method
-        self.feature_params=dict(maxCorners=30,qualityLevel=0.3,minDistance=7,blockSize=7)
+        self.feature_params=dict(maxCorners=50,qualityLevel=0.3,minDistance=7,blockSize=7)
         self.lk_params=dict(winSize=(15,15),maxLevel=2,criteria=(cv.TERM_CRITERIA_EPS|cv.TERM_CRITERIA_COUNT,10,0.03))
         if(method=='kalman_corners'):
             self.init_kalman_tracker()
@@ -45,12 +47,7 @@ class Track(Detection):
                                    [0,0,0,1]],np.float32) * 0.001
         self.offset_tracker.correct(self.offset)
         self.offset_tracker.predict();
-        self.offset_tracker.correct(self.offset)
-        self.offset_tracker.predict();
-        self.offset_tracker.correct(self.offset)
-        self.offset_tracker.predict();
-        self.offset_tracker.correct(self.offset)
-        self.offset_tracker.predict();
+        
     def init_kalman_tracker(self):
         self.kalman_tracker = cv.KalmanFilter(8,4)
         self.kalman_tracker.measurementMatrix = np.array([[1,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0],[0,0,1,0,0,0,0,0],[0,0,0,1,0,0,0,0]],np.float32)
@@ -59,20 +56,20 @@ class Track(Detection):
                                            ,[0,0,0,0,1,0,0,0],[0,0,0,0,0,1,0,0],[0,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,1]],np.float32)
 
         self.kalman_tracker.processNoiseCov = np.array([[1,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0],[0,0,1,0,0,0,0,0],[0,0,0,1,0,0,0,0]
-                                          ,[0,0,0,0,1,0,0,0],[0,0,0,0,0,1,0,0],[0,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,1]],np.float32)*0.001
+                                          ,[0,0,0,0,1,0,0,0],[0,0,0,0,0,1,0,0],[0,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,1]],np.float32)*0.002
 
         self.kalman_tracker.predict();
 
         self.kalman_tracker.correct(self.corners())
-        self.kalman_tracker.predict();
-        self.kalman_tracker.correct(self.corners())
-        self.kalman_tracker.predict();
-        self.kalman_tracker.correct(self.corners())
-        self.kalman_tracker.predict();
-        self.kalman_tracker.correct(self.corners())
+        
     
     def copy(self):
-        other = Track(self.track_id,np.array([0,self.conf,self.xmin,self.ymin,self.xmax,self.ymax],np.float32),self.descriptor)
+        xmin = self.xmin
+        xmax = self.xmax
+        ymin = self.ymin
+        ymax = self.ymax
+        
+        other = Track(self.track_id,np.array([0,self.conf,xmin,ymin,xmax,ymax],np.float32),self.descriptor)
         other.tracked_count = self.tracked_count
         other.missed_count = self.missed_count
         other.matched = self.matched
@@ -81,13 +78,8 @@ class Track(Detection):
     
     def update(self,det,frame_gray,prev_frame_gray):
         self.predict(prev_frame_gray,frame_gray)
-        self.xmin = det.xmin
-        self.ymin = det.ymin
-        self.xmax=det.xmax
-        self.ymax = det.ymax
-        if(det.descriptor.shape[0]!=self.descriptor.shape[0]):
-            self.descriptor = []
-            self.descriptor = np.zeros(det.descriptor.shape[0],np.float32)
+        
+        self.hog = det.hog
         self.descriptor[:] = det.descriptor
         self.matched = True
         self.missed_count = 0
@@ -95,15 +87,91 @@ class Track(Detection):
         
         if(self.tracked_count>3):
             self.conf = det.conf
+        else:
+            self.conf = 0
         if(self.method=='kalman_corners'):
-            self.kalman_tracker.correct(self.corners())
+            pred = self.kalman_tracker.predict()
+            self.kalman_tracker.correct(det.corners())
+            prev_center = np.array([(self.xmax+self.xmin/2),(self.ymax+self.ymin)/2])
+            pred_center = np.array([(self.pred_xmax+self.pred_xmin/2),(self.pred_ymax+self.pred_ymin)/2])
+            prev_area = (self.xmax-self.xmin)*(self.ymax-self.ymin)
+            
+            pred_area= (self.pred_xmax-self.pred_xmin)*(self.pred_ymax-self.pred_ymin)
+            if(prev_area==0):
+                prev_area=pred_area
+           
+            print('offset ',self.offset)
+            if(self.tracked_count>15):
+                self.xmin = self.pred_xmin
+                self.ymin = self.pred_ymin
+                self.xmax=self.pred_xmax
+                self.ymax = self.pred_ymax
+                self.offset = [(pred_center-prev_center)[0],(pred_center-prev_center)[1]]
+            else:
+                self.xmin = det.xmin
+                self.ymin = det.ymin
+                self.xmax=det.xmax
+                self.ymax = det.ymax
+            
+                
+    def search_local_best_match(self,frame):
+        s=8
+        shift_x = 0
+        shift_y =0
+        shifts_x = []
+        shifts_y = []
+        sel_dist = np.linalg.norm(get_hog_descriptor(frame,self.pred_xmin,self.pred_ymin,self.pred_xmax,self.pred_ymax)-self.hog,ord=1)
+        init_dist = sel_dist
+        while s>=1:
+            shift_x = 0
+            shift_y = 0
+            for x in (-s,0,s):
+                for y in(-s,0,s):
+                    
+                    dist = np.linalg.norm(get_hog_descriptor(frame,self.pred_xmin+x,self.pred_ymin+y,self.pred_xmax+x,self.pred_ymax+y)-self.hog,ord=1)
+                    if(dist<sel_dist):
+                       sel_dist = dist
+                       shift_x = x
+                       shift_y = y
+            shifts_x.append(shift_x)
+            shifts_y.append(shift_y)
+            self.pred_xmin  += shift_x
+            self.pred_xmax  += shift_x
+            self.pred_ymin  += shift_y
+            self.pred_ymax  += shift_y
+            s = s/2
+        
+        
+        
     def apply_prediction(self,frame_gray,prev_frame_gray):
         
         self.predict(prev_frame_gray,frame_gray)
-        self.xmin = self.pred_xmin
-        self.ymin = self.pred_ymin
-        self.xmax = self.pred_xmax
-        self.ymax = self.pred_ymax
+        #self.search_local_best_match(frame_gray)
+        desc_dist = np.linalg.norm(self.hog-get_hog_descriptor(frame_gray,self.pred_xmin,self.pred_ymin,self.pred_xmax,self.pred_ymax),ord=1)
+        if(desc_dist<0.15):
+            self.xmin = self.pred_xmin
+            self.ymin = self.pred_ymin
+            self.xmax = self.pred_xmax
+            self.ymax = self.pred_ymax
+#            if(desc_dist<0.7):
+#                if(self.method=='kalman_corners'):
+#                    self.kalman_tracker.correct(self.corners())
+            #print(self.track_id,' this is all good ',self.missed_count,desc_dist)
+            
+        elif(desc_dist<0.2):
+            self.xmin = (self.pred_xmin + self.xmin)/2
+            self.ymin = (self.pred_ymin+ self.ymin)/2
+            self.xmax = (self.pred_xmax+ self.xmax)/2
+            self.ymax = (self.pred_ymax+ self.ymax)/2
+            
+            if(self.missed_count>6):
+                self.conf=0
+        else:
+            
+            if(self.missed_count>6):
+                self.conf=0
+            if(self.missed_count>6):
+                self.conf =-0.1
       
     def shiftKeyPointsFlow(self,frame,prev_frame):
 	
@@ -119,6 +187,7 @@ class Track(Detection):
             p1, st, err = cv.calcOpticalFlowPyrLK(prev_frame_grey, frame_grey,p0, None, **self.lk_params)
             old_box = bounding_box_naive(p0)
             new_box = bounding_box_naive(p1)
+            self.new_box = new_box
             offset = [new_box[0]-old_box[0],new_box[1]-old_box[1]]
             
             new_center = self.center() +offset
@@ -128,24 +197,26 @@ class Track(Detection):
             new_width = old_width * (new_box[2]/old_box[2])
 
             new_height = old_height * (new_box[3]/old_box[3])
-            scale_change= np.max([old_width/new_width,old_height/new_height])
+            scale_change= (old_width/new_width)*(old_height/new_height)
             if(new_width==0 or new_width>frame_width or math.isnan(new_width)):
                 new_width=0
             if(new_height==0 or new_height>frame_height or math.isnan(new_height)):
                 new_height=0
             self.offset_tracker.correct(np.array([offset[0],scale_change],np.float32))
-            pred_offset= self.offset_tracker.predict()
-            if(not math.isnan(pred_offset[0][0])):
-                self.offset[0]= pred_offset[0][0]
-            if(not math.isnan(pred_offset[1][0])):
-                self.offset[1]= pred_offset[1][0]
+            self.offset[0] = offset[0]
+            self.offset[1] = scale_change
+#            pred_offset= self.offset_tracker.predict()
+#            if(not math.isnan(pred_offset[0][0])):
+#                self.offset[0]= pred_offset[0][0]
+#            if(not math.isnan(pred_offset[1][0])):
+#                self.offset[1]= pred_offset[1][0]
             
             self.pred_xmin = new_center[0] - (new_width/2)
             self.pred_ymin=new_center[1] - (new_height/2)
             self.pred_xmax=new_center[0] + (new_width/2)
             self.pred_ymax=new_center[1]+ (new_height/2)
             
-        elif(self.missed_count>0):
+        elif(self.missed_count>6):
             self.conf=0
             
         else:
@@ -160,6 +231,7 @@ class Track(Detection):
             
         elif(self.method =='keypoint_flow'):
             self.shiftKeyPointsFlow(frame_gray,prev_frame_gray)
+        
            
             
     
